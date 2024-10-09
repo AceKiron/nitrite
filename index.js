@@ -5,6 +5,15 @@ const fs = require("fs");
 const path = require("path");
 const cp = require("child_process");
 
+const EXIT_STATUSES = {
+    UNKNOWN_ERROR: -1,
+    OK: 0,
+    NO_COMMAND_PROVIDED: 1,
+    NO_ARGUMENT_PROVIDED: 2,
+    UNKNOWN_COMMAND: 3,
+    TYPE_ERROR: 4
+};
+
 async function download(src, destDir) {
     return (await axios({
         method: "get",
@@ -23,8 +32,13 @@ async function setup(subdir) {
     await createDirectory(path.join(rootDir, "app/controllers"));
     await createDirectory(path.join(rootDir, "app/database"));
     await createDirectory(path.join(rootDir, "app/routers"));
+    download("app/controllers/APIController.js", rootDir);
     download("app/controllers/IndexController.js", rootDir);
-    download("app/database/0_create_users_table.js", rootDir);
+    download("app/database/0_create_users_table.down.js", rootDir);
+    download("app/database/0_create_users_table.up.js", rootDir);
+    download("app/database/1_insert_demo_user.down.js", rootDir);
+    download("app/database/1_insert_demo_user.up.js", rootDir);
+    download("app/routers/APIRouter.js", rootDir);
     download("app/routers/IndexRouter.js", rootDir);
 
     await createDirectory(path.join(rootDir, "core/controllers"));
@@ -51,6 +65,7 @@ async function setup(subdir) {
     download("core/www/sass/index.scss", rootDir);
     download("core/www/sass/index.scss", rootDir);
     download("core/Application.js", rootDir);
+    download("core/Database.js", rootDir);
     download("core/Request.js", rootDir);
     download("core/Response.js", rootDir);
     download("core/Router.js", rootDir);
@@ -75,26 +90,84 @@ async function setup(subdir) {
 
     download(".gitignore", rootDir);
     download("gulpfile.js", rootDir);
-    await download("package.json", rootDir);
+    await download(".example-env", rootDir);
 
+    await download("package.json", rootDir);
     cp.exec("npm i", { cwd: rootDir });
+}
+
+async function migrate(max) {
+    const parsedMax = Number.parseInt(max);
+
+    if (Number.isNaN(parsedMax)) {
+        console.error(`'${max}' is not an integer`);
+        process.exit(EXIT_STATUSES.TYPE_ERROR);
+    }
+
+    fs.readdir(path.join(process.cwd(), "app/database"), null, (err, files) => {
+        if (err) {
+            console.error(err);
+            process.exit(EXIT_STATUSES.UNKNOWN_ERROR);
+        }
+        
+        const filesJson = {};
+        for (const file of [...new Set(files.map((value) => value.split(".")[0]))]) {
+            const key = Number.parseInt(file.split("_")[0]);
+            if (Number.isNaN(key)) {
+                console.error(`'${file}' does not start with an integer`);
+                process.exit(EXIT_STATUSES.TYPE_ERROR);
+            }
+
+            filesJson[key] = {
+                down: path.join(process.cwd(), "app/database", file + ".down.js"),
+                up: path.join(process.cwd(), "app/database", file + ".up.js"),
+            };
+        }
+
+        const orderedFilesJson = Object.keys(filesJson).sort().reduce(
+            (obj, key) => {
+                obj[key] = filesJson[key];
+                return obj;
+            },
+            {}
+        );
+
+        const tableModule = require("./migrate-table-sqlite");
+
+        for (const [index, {down, up}] of Object.entries(orderedFilesJson)) {
+            if (index <= parsedMax) {
+                // Up
+                require(up)(tableModule);
+            } else {
+                // Down
+                require(down)(tableModule);
+            }
+        }
+    });
 }
 
 const args = process.argv.slice(2);
 
 if (args.length == 0) {
     console.error("Available commands: setup");
-    process.exit(1);
+    process.exit(EXIT_STATUSES.NO_COMMAND_PROVIDED);
 }
 
 if (args[0] == "setup") {
     if (args.length < 2) {
         console.error("Correct syntax: 'npx nitrite setup <dir>'");
-        process.exit(2);
+        process.exit(EXIT_STATUSES.NO_ARGUMENT_PROVIDED);
     }
 
     setup(args[1]);
+} else if (args[0] == "migrate") {
+    if (args.length < 2) {
+        console.error("Correct syntax: 'npx nitrite migrate <max>'");
+        process.exit(EXIT_STATUSES.NO_ARGUMENT_PROVIDED);
+    }
+
+    migrate(args[1]);
 } else {
     console.error(`Unknown command: 'npx nitrite ${args[0]}'`);
-    process.exit(3);
+    process.exit(EXIT_STATUSES.UNKNOWN_COMMAND);
 }
